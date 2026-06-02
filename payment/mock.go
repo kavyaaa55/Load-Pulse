@@ -33,10 +33,11 @@ func PayHandler(rdb *goredis.Client, database *db.DB) gin.HandlerFunc {
 		}
 
 		ctx := context.Background()
-		slotKey := fmt.Sprintf("slot:%s", req.UserID)
+		slotKey   := fmt.Sprintf("slot:%s", req.UserID)
 		boughtKey := fmt.Sprintf("bought:%s", req.UserID)
-		invKey := fmt.Sprintf("inv:%s", req.ProductID)
-		priceKey := fmt.Sprintf("price:%s", req.ProductID)
+		invKey    := fmt.Sprintf("inv:%s", req.ProductID)
+		priceKey  := fmt.Sprintf("price:%s", req.ProductID)
+		slotsKey  := fmt.Sprintf("slots:%s", req.ProductID) // ← SET tracking active slots
 
 		// Verify the reservation slot is still valid.
 		exists, err := rdb.Exists(ctx, slotKey).Result()
@@ -55,6 +56,7 @@ func PayHandler(rdb *goredis.Client, database *db.DB) gin.HandlerFunc {
 			pipe := rdb.Pipeline()
 			pipe.Set(ctx, boughtKey, 1, 0)
 			pipe.Del(ctx, slotKey)
+			pipe.SRem(ctx, slotsKey, req.UserID) // ← slot khatam, SET se hatao
 			if _, err := pipe.Exec(ctx); err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "redis error"})
 				return
@@ -85,6 +87,7 @@ func PayHandler(rdb *goredis.Client, database *db.DB) gin.HandlerFunc {
 			pipe := rdb.Pipeline()
 			pipe.Incr(ctx, invKey)
 			pipe.Del(ctx, slotKey)
+			pipe.SRem(ctx, slotsKey, req.UserID) // ← slot free, SET se hatao
 			if _, err := pipe.Exec(ctx); err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "redis error"})
 				return

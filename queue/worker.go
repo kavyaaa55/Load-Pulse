@@ -15,7 +15,7 @@ import (
 
 const (
 	slotTTL      = "120" // seconds — reservation window after atomic buy
-	pollInterval = 10 * time.Millisecond
+	pollInterval = 1 * time.Millisecond
 	priceHike    = 1.20 // 20 % increase when stock drops to ≤ 10
 	lowStockMark = 10
 )
@@ -24,8 +24,9 @@ const (
 // It runs until the product is sold out or the context is cancelled.
 func StartWorker(ctx context.Context, productID string, rdb *goredis.Client, hub *handlers.Hub) {
 	queueKey := fmt.Sprintf("queue:%s", productID)
-	invKey := fmt.Sprintf("inv:%s", productID)
+	invKey   := fmt.Sprintf("inv:%s", productID)
 	priceKey := fmt.Sprintf("price:%s", productID)
+	slotsKey := fmt.Sprintf("slots:%s", productID) // ← SET tracking active slots
 
 	log.Printf("worker[%s]: started", productID)
 
@@ -50,7 +51,7 @@ func StartWorker(ctx context.Context, productID string, rdb *goredis.Client, hub
 			continue
 		}
 
-		slotKey := fmt.Sprintf("slot:%s", userID)
+		slotKey   := fmt.Sprintf("slot:%s", userID)
 		boughtKey := fmt.Sprintf("bought:%s", userID)
 
 		// Run the atomic Lua script.
@@ -67,6 +68,12 @@ func StartWorker(ctx context.Context, productID string, rdb *goredis.Client, hub
 
 		switch result {
 		case "OK":
+			// Track this user as holding an active slot
+			// Gate check in buy.go uses SCARD of this SET
+			if err := rdb.SAdd(ctx, slotsKey, userID).Err(); err != nil {
+				log.Printf("worker[%s]: SADD slots error for user %s: %v", productID, userID, err)
+			}
+
 			// Read the new inventory count.
 			countStr, err := rdb.Get(ctx, invKey).Result()
 			if err != nil {
@@ -94,12 +101,12 @@ func StartWorker(ctx context.Context, productID string, rdb *goredis.Client, hub
 			log.Printf("worker[%s]: reserved slot for user %s, inventory=%d", productID, userID, count)
 
 		case "SOLD_OUT":
-			// Fetch price for the final broadcast.
-			priceStr, _ := rdb.Get(ctx, priceKey).Result()
-			price, _ := strconv.ParseFloat(priceStr, 64)
-			hub.BroadcastInventory(productID, 0, price)
-			log.Printf("worker[%s]: sold out, stopping worker", productID)
-			return
+		priceStr, _ := rdb.Get(ctx, priceKey).Result()
+		price, _ := strconv.ParseFloat(priceStr, 64)
+		hub.BroadcastInventory(productID, 0, price)
+		log.Printf("worker[%s]: sold out, waiting for restocks", productID)
+		time.Sleep(10 * time.Millisecond)  
+		// return  
 
 		case "ALREADY_BOUGHT":
 			log.Printf("worker[%s]: user %s already bought, skipping", productID, userID)
