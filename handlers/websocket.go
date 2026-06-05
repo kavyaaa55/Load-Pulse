@@ -18,6 +18,19 @@ type InventoryUpdate struct {
 	Price     float64 `json:"price"`
 }
 
+// UserEvent is pushed to all clients to update a single cell in the grid.
+type UserEvent struct {
+	Type      string `json:"type"`       // "user_event"
+	UserIndex int    `json:"user_index"` // 0-9999 — which cell to update
+	State     string `json:"state"`      // waiting | won | lost | ratelimit | expired
+}
+
+// SimEvent is pushed to signal simulation start/stop.
+type SimEvent struct {
+	Type string `json:"type"` // "sim_start" | "sim_done"
+	VUs  int    `json:"vus"`
+}
+
 // Hub maintains the set of active WebSocket clients and broadcasts messages.
 type Hub struct {
 	mu      sync.RWMutex
@@ -38,7 +51,7 @@ var upgrader = websocket.Upgrader{
 func NewHub() *Hub {
 	return &Hub{
 		clients:   make(map[*wsClient]struct{}),
-		broadcast: make(chan []byte, 256),
+		broadcast: make(chan []byte, 50000), // large enough for 10k user events
 	}
 }
 
@@ -71,6 +84,31 @@ func (h *Hub) BroadcastInventory(productID string, count int, price float64) {
 	h.broadcast <- msg
 }
 
+// BroadcastUserEvent sends a cell state update to all connected clients.
+func (h *Hub) BroadcastUserEvent(userIndex int, state string) {
+	msg, err := json.Marshal(UserEvent{
+		Type:      "user_event",
+		UserIndex: userIndex,
+		State:     state,
+	})
+	if err != nil {
+		return
+	}
+	h.broadcast <- msg // blocking — never drop user events
+}
+
+// BroadcastSimEvent sends a simulation lifecycle event to all clients.
+func (h *Hub) BroadcastSimEvent(eventType string, vus int) {
+	msg, err := json.Marshal(SimEvent{
+		Type: eventType,
+		VUs:  vus,
+	})
+	if err != nil {
+		return
+	}
+	h.broadcast <- msg
+}
+
 // register adds a client to the hub.
 func (h *Hub) register(c *wsClient) {
 	h.mu.Lock()
@@ -98,7 +136,7 @@ func (h *Hub) ServeWS(c *gin.Context) {
 
 	client := &wsClient{
 		conn: conn,
-		send: make(chan []byte, 64),
+		send: make(chan []byte, 50000), // large enough to buffer all sim events
 	}
 	h.register(client)
 

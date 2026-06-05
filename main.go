@@ -90,6 +90,7 @@ func main() {
 	r.GET("/queue/position/:userID/:productID", handlers.QueuePositionHandler(redisclient.RDB))
 	r.GET("/ws", hub.ServeWS)
 	r.POST("/pay", payment.PayHandler(redisclient.RDB, database))
+	r.POST("/simulate/start", handlers.SimulateHandler(redisclient.RDB, hub))
 
 	log.Println("Listening on :8080")
 	if err := r.Run(":8080"); err != nil {

@@ -253,14 +253,7 @@
   var cells        = [];
   var ws           = null;
   var simRunning   = false;
-  var simInterval  = null;
-  var batchIndex   = 0;
-  var BATCH_SIZE   = 50;    // users sent per tick — smaller batches, more realistic
-  var TICK_MS      = 50;    // ms between batches — 1000 users/sec spread out
-  var simEpoch     = 0;     // increments each run so user IDs are always unique
-
   var stats = { won: 0, lost: 0, wait: 0, rate: 0, confirmed: 0 };
-  var reqCount = 0, rpsTimer = null, rpsCount = 0;
 
   var selectedProduct = 'iphone15';
 
@@ -330,6 +323,44 @@
     ws.onmessage = function(e) {
       try {
         var msg = JSON.parse(e.data);
+
+        // ── Simulation lifecycle events ──────────────────────────────
+        if (msg.type === 'sim_start') {
+          log('Simulation started — ' + msg.vus + ' goroutines launched on server', 'info');
+          return;
+        }
+        if (msg.type === 'sim_done') {
+          log('All goroutines done. Won=' + stats.won + ' Lost=' + stats.lost, 'info');
+          document.getElementById('btn-start').disabled = false;
+          document.getElementById('btn-stop').disabled  = true;
+          simRunning = false;
+          return;
+        }
+
+        // ── Per-user cell update ─────────────────────────────────────
+        if (msg.type === 'user_event') {
+          var idx   = msg.user_index;
+          var state = msg.state;
+          setCellState(idx, state);
+          if (state === 'won') {
+            stats.won++;
+            stats.confirmed++;
+          } else if (state === 'lost') {
+            stats.lost++;
+          } else if (state === 'waiting') {
+            stats.wait++;
+          } else if (state === 'ratelimit') {
+            stats.rate++;
+          }
+          // Decrement wait when resolved
+          if (state !== 'waiting') {
+            stats.wait = Math.max(0, stats.wait - 1);
+          }
+          updateStats();
+          return;
+        }
+
+        // ── Inventory update from queue worker ───────────────────────
         var pid = msg.product_id;
         if (!products[pid]) return;
 
@@ -393,130 +424,48 @@
   function startSim() {
     if (simRunning) return;
     simRunning = true;
-    batchIndex = 0;
-    simEpoch++;   // new epoch = fresh user IDs = no rate limit collision
     document.getElementById('btn-start').disabled = true;
     document.getElementById('btn-stop').disabled  = false;
     document.getElementById('sold-out-banner').style.display = 'none';
-    log('Simulation started — sending ' + TOTAL_CELLS + ' users to /buy', 'info');
 
-    // RPS counter
-    rpsCount = 0;
-    rpsTimer = setInterval(function() {
-      document.getElementById('s-rps').textContent = rpsCount;
-      rpsCount = 0;
-    }, 1000);
+    // Reset grid visually
+    for (var i = 0; i < cells.length; i++) cells[i].className = 'cell';
+    stats = { won: 0, lost: 0, wait: 0, rate: 0, confirmed: 0 };
+    updateStats();
 
-    simInterval = setInterval(sendBatch, TICK_MS);
-  }
+    log('Sending simulation request to server...', 'info');
 
-  function stopSim() {
-    simRunning = false;
-    clearInterval(simInterval);
-    clearInterval(rpsTimer);
-    document.getElementById('btn-start').disabled = false;
-    document.getElementById('btn-stop').disabled  = true;
-    log('Simulation stopped', 'info');
-  }
-
-  function sendBatch() {
-    if (batchIndex >= TOTAL_CELLS) {
-      stopSim();
-      log('All ' + TOTAL_CELLS + ' users sent. Final stats: won=' + stats.won + ' lost=' + stats.lost, 'info');
-      return;
-    }
-
-    var end = Math.min(batchIndex + BATCH_SIZE, TOTAL_CELLS);
-    for (var i = batchIndex; i < end; i++) {
-      sendBuy(i);
-    }
-    batchIndex = end;
-  }
-
-  function sendBuy(cellIdx, isRetry) {
-    var userId = isRetry ? ('sim' + simEpoch + '_retry_' + cellIdx + '_' + Date.now()) : ('sim' + simEpoch + '_user_' + cellIdx);
-    if (!isRetry) {
-      setCellState(cellIdx, 'waiting');
-      stats.wait++;
-      updateStats();
-      rpsCount++;
-    }
-
-    fetch('/buy', {
+    // Single HTTP call — Go server does the heavy lifting with goroutines
+    fetch('/simulate/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: userId, product_id: selectedProduct })
-    })
-    .then(function(r) { return r.json().then(function(b) { return { status: r.status, body: b }; }); })
-    .then(function(res) {
-      stats.wait = Math.max(0, stats.wait - 1);
-
-      if (res.status === 200) {
-        // Queued — now attempt payment
-        setCellState(cellIdx, 'waiting');
-        sendPay(cellIdx, userId);
-      } else if (res.status === 409) {
-        // Sold out — but check if inventory came back (payment fail returns stock)
-        var inv = products[selectedProduct].count;
-        if (inv > 0 && simRunning) {
-          // Inventory available again (from failed payment) — retry after short delay
-          setTimeout(function() { sendBuy(cellIdx, true); }, 200 + Math.random() * 300);
-        } else {
-          stats.lost++;
-          setCellState(cellIdx, 'lost');
-          updateStats();
-        }
-      } else if (res.status === 429) {
-        stats.rate++;
-        setCellState(cellIdx, 'ratelimit');
-        updateStats();
-      } else {
-        stats.lost++;
-        setCellState(cellIdx, 'lost');
-        updateStats();
-      }
-    })
-    .catch(function() {
-      stats.wait = Math.max(0, stats.wait - 1);
-      stats.lost++;
-      setCellState(cellIdx, 'lost');
-      updateStats();
-    });
-  }
-
-  function sendPay(cellIdx, userId) {
-    fetch('/pay', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: userId, product_id: selectedProduct })
+      body: JSON.stringify({ product_id: selectedProduct, vus: TOTAL_CELLS })
     })
     .then(function(r) { return r.json(); })
     .then(function(body) {
-      if (body.status === 'ORDER_CONFIRMED') {
-        stats.won++;
-        stats.confirmed++;
-        setCellState(cellIdx, 'won');
-        updateStats();
-      } else if (body.status === 'PAYMENT_FAILED') {
-        // Inventory was returned — retry this cell so stock doesn't get stranded
-        setCellState(cellIdx, 'waiting');
-        setTimeout(function() { sendBuy(cellIdx, true); }, 100 + Math.random() * 200);
-      } else if (body.status === 'SLOT_EXPIRED') {
-        setCellState(cellIdx, 'expired');
-        // Slot expired means inventory was NOT returned, mark as lost
-        stats.lost++;
-        updateStats();
+      if (body.error) {
+        log('Error: ' + body.error, 'err');
+        simRunning = false;
+        document.getElementById('btn-start').disabled = false;
+        document.getElementById('btn-stop').disabled  = true;
       } else {
-        stats.lost++;
-        setCellState(cellIdx, 'lost');
-        updateStats();
+        log('Server launched ' + body.vus + ' goroutines — watching WebSocket...', 'info');
       }
     })
-    .catch(function() {
-      stats.lost++;
-      setCellState(cellIdx, 'lost');
-      updateStats();
+    .catch(function(e) {
+      log('Failed to start simulation: ' + e, 'err');
+      simRunning = false;
+      document.getElementById('btn-start').disabled = false;
+      document.getElementById('btn-stop').disabled  = true;
     });
+  }
+
+  function stopSim() {
+    // Can't stop server-side goroutines from here — just update UI
+    simRunning = false;
+    document.getElementById('btn-start').disabled = false;
+    document.getElementById('btn-stop').disabled  = true;
+    log('Stop requested (in-flight goroutines will complete)', 'info');
   }
 
   // ── Helpers ────────────────────────────────────────────────────────────────
@@ -539,7 +488,6 @@
     updateStats();
     document.getElementById('sold-out-banner').style.display = 'none';
     document.getElementById('s-rps').textContent = '0';
-    // Remove sold-out class from all cards
     Object.keys(products).forEach(function(pid) {
       if (products[pid].el) products[pid].el.classList.remove('sold-out');
     });
