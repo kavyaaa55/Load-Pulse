@@ -213,21 +213,6 @@ return "OK"
 
 ---
 
-## Interview Talking Points
-
-1. **Atomic inventory** — Lua scripts make check + decrement a single Redis operation. At 10k concurrent users, no two requests can interleave inside the script.
-
-2. **Queue is a waiting room, not a reservation** — Inventory only decrements when the worker pops a user via LPOP. Joining the queue gives you a position, not an item.
-
-3. **Gate check replaces a static queue cap** — `LLEN + SCARD >= inv` is computed live from Redis state. When payment fails and inventory is returned, the gate reopens automatically for new users.
-
-4. **Worker never stops on SOLD_OUT** — Payment failures restore inventory via INCR. The worker loops indefinitely so restored items get reassigned.
-
-5. **Slot TTL** — Abandoned payments auto-expire after 120s, returning the slot to the pool. No cron job, no cleanup worker needed.
-
-6. **Postgres never read during sale** — All hot state in Redis. Postgres insert is async, after payment success only. Keeps p95 latency low under load.
-
----
 
 ## Production Extensions
 
