@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Live Sale Platform</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0f0f0f;
+      color: #e0e0e0;
+      font-family: 'Courier New', monospace;
+      min-height: 100vh;
+      padding: 24px;
+    }
+
+    h1 {
+      font-size: 1.4rem;
+      letter-spacing: 2px;
+      color: #fff;
+      margin-bottom: 4px;
+    }
+
+    .subtitle {
+      font-size: 0.75rem;
+      color: #555;
+      margin-bottom: 24px;
+      letter-spacing: 1px;
+    }
+
+    /* ── Products row ─────────────────────────────────────────────── */
+    .products {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 24px;
+    }
+
+    .product-card {
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      border-radius: 8px;
+      padding: 14px 20px;
+      cursor: pointer;
+      transition: border-color 0.2s;
+      min-width: 160px;
+    }
+
+    .product-card:hover { border-color: #555; }
+    .product-card.active { border-color: #4f8ef7; }
+    .product-card.sold-out { border-color: #e74c3c; opacity: 0.6; pointer-events: none; }
+
+    .product-name { font-size: 0.85rem; color: #aaa; margin-bottom: 6px; }
+    .product-count {
+      font-size: 1.8rem;
+      font-weight: bold;
+      color: #4f8ef7;
+      line-height: 1;
+    }
+    .product-count.low { color: #e74c3c; }
+    .product-price { font-size: 0.75rem; color: #666; margin-top: 4px; }
+
+    /* ── Controls ────────────────────────────────────────────────── */
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+
+    .btn {
+      padding: 10px 24px;
+      border: none;
+      border-radius: 6px;
+      font-family: 'Courier New', monospace;
+      font-size: 0.85rem;
+      cursor: pointer;
+      letter-spacing: 1px;
+      transition: opacity 0.2s;
+    }
+    .btn:hover { opacity: 0.85; }
+    .btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+    .btn-start  { background: #27ae60; color: #fff; }
+    .btn-stop   { background: #e74c3c; color: #fff; }
+    .btn-reset  { background: #2a2a2a; color: #aaa; border: 1px solid #444; }
+
+    .status-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: #555;
+      display: inline-block;
+    }
+    .status-dot.connected { background: #27ae60; box-shadow: 0 0 6px #27ae60; }
+    .status-dot.error     { background: #e74c3c; }
+
+    .ws-label { font-size: 0.7rem; color: #555; }
+
+    /* ── Stats bar ───────────────────────────────────────────────── */
+    .stats {
+      display: flex;
+      gap: 24px;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+
+    .stat { font-size: 0.78rem; }
+    .stat span { color: #4f8ef7; font-weight: bold; }
+    .stat.won span   { color: #27ae60; }
+    .stat.lost span  { color: #e74c3c; }
+    .stat.wait span  { color: #f39c12; }
+    .stat.rate span  { color: #9b59b6; }
+
+    /* ── Grid ────────────────────────────────────────────────────── */
+    .grid-label {
+      font-size: 0.7rem;
+      color: #444;
+      margin-bottom: 8px;
+      letter-spacing: 1px;
+    }
+
+    #grid {
+      display: grid;
+      grid-template-columns: repeat(100, 7px);
+      grid-template-rows:    repeat(100, 7px);
+      gap: 1px;
+    }
+
+    .cell {
+      width: 7px;
+      height: 7px;
+      border-radius: 1px;
+      background: #1e1e1e;
+      transition: background 0.15s;
+    }
+
+    .cell.waiting  { background: #f39c12; }
+    .cell.won      { background: #27ae60; }
+    .cell.lost     { background: #e74c3c; }
+    .cell.expired  { background: #6c3483; }
+    .cell.ratelimit{ background: #2471a3; }
+
+    /* ── Legend ──────────────────────────────────────────────────── */
+    .legend {
+      display: flex;
+      gap: 16px;
+      margin-top: 12px;
+      flex-wrap: wrap;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 0.7rem;
+      color: #666;
+    }
+
+    .legend-dot {
+      width: 10px; height: 10px;
+      border-radius: 2px;
+    }
+
+    /* ── Sold out banner ─────────────────────────────────────────── */
+    #sold-out-banner {
+      display: none;
+      background: #e74c3c;
+      color: #fff;
+      text-align: center;
+      padding: 12px;
+      font-size: 1.1rem;
+      letter-spacing: 3px;
+      border-radius: 6px;
+      margin-bottom: 16px;
+      animation: pulse 1s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.7; }
+    }
+
+    /* ── Log ─────────────────────────────────────────────────────── */
+    #log {
+      margin-top: 20px;
+      background: #111;
+      border: 1px solid #222;
+      border-radius: 6px;
+      padding: 12px;
+      height: 120px;
+      overflow-y: auto;
+      font-size: 0.7rem;
+      color: #555;
+    }
+
+    #log .entry { margin-bottom: 2px; }
+    #log .entry.ok   { color: #27ae60; }
+    #log .entry.err  { color: #e74c3c; }
+    #log .entry.info { color: #4f8ef7; }
+  </style>
+</head>
+<body>
+
+  <h1>⚡ LIVE SALE PLATFORM</h1>
+  <p class="subtitle">10,000 CONCURRENT USERS · ZERO OVERSELL · REAL-TIME</p>
+
+  <!-- Products -->
+  <div class="products" id="products"></div>
+
+  <!-- Sold out banner -->
+  <div id="sold-out-banner">🔴 SOLD OUT</div>
+
+  <!-- Controls -->
+  <div class="controls">
+    <button class="btn btn-start" id="btn-start" onclick="startSim()">▶ START SIMULATION</button>
+    <button class="btn btn-stop"  id="btn-stop"  onclick="stopSim()" disabled>■ STOP</button>
+    <button class="btn btn-reset" id="btn-reset" onclick="resetGrid()">↺ RESET</button>
+    <span class="status-dot" id="ws-dot"></span>
+    <span class="ws-label" id="ws-label">WebSocket disconnected</span>
+  </div>
+
+  <!-- Stats -->
+  <div class="stats">
+    <div class="stat won">  SLOTS WON:    <span id="s-won">0</span></div>
+    <div class="stat lost"> SLOTS LOST:   <span id="s-lost">0</span></div>
+    <div class="stat wait"> IN QUEUE:     <span id="s-wait">0</span></div>
+    <div class="stat rate"> RATE LIMITED: <span id="s-rate">0</span></div>
+    <div class="stat">      CONFIRMED:   <span id="s-confirmed">0</span></div>
+    <div class="stat">      REQ/S:        <span id="s-rps">0</span></div>
+  </div>
+
+  <!-- Grid -->
+  <div class="grid-label">10,000 VIRTUAL USERS — EACH CELL = 1 USER</div>
+  <div id="grid"></div>
+
+  <!-- Legend -->
+  <div class="legend">
+    <div class="legend-item"><div class="legend-dot" style="background:#1e1e1e;border:1px solid #333"></div> Idle</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#f39c12"></div> Waiting in queue</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#27ae60"></div> Slot won / Confirmed</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#e74c3c"></div> Sold out / Pay failed</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#2471a3"></div> Rate limited</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#6c3483"></div> Slot expired</div>
+  </div>
+
+  <!-- Log -->
+  <div id="log"></div>
+
+<script>
+  // ── State ──────────────────────────────────────────────────────────────────
+  var TOTAL_CELLS  = 10000;
+  var cells        = [];
+  var ws           = null;
+  var simRunning   = false;
+  var simInterval  = null;
+  var batchIndex   = 0;
+  var BATCH_SIZE   = 50;    // users sent per tick — smaller batches, more realistic
+  var TICK_MS      = 50;    // ms between batches — 1000 users/sec spread out
+  var simEpoch     = 0;     // increments each run so user IDs are always unique
+
+  var stats = { won: 0, lost: 0, wait: 0, rate: 0, confirmed: 0 };
+  var reqCount = 0, rpsTimer = null, rpsCount = 0;
+
+  var selectedProduct = 'iphone15';
+
+  var products = {
+    iphone15:   { name: 'iPhone 15',  count: '...', price: '...', el: null },
+    macbook:    { name: 'MacBook',    count: '...', price: '...', el: null },
+    airpods:    { name: 'AirPods',    count: '...', price: '...', el: null },
+    ipad:       { name: 'iPad',       count: '...', price: '...', el: null },
+    applewatch: { name: 'Apple Watch',count: '...', price: '...', el: null },
+  };
+
+  // ── Build grid ─────────────────────────────────────────────────────────────
+  (function buildGrid() {
+    var grid = document.getElementById('grid');
+    for (var i = 0; i < TOTAL_CELLS; i++) {
+      var el = document.createElement('div');
+      el.className = 'cell';
+      el.title = 'User #' + (i + 1);
+      grid.appendChild(el);
+      cells.push(el);
+    }
+  })();
+
+  // ── Build product cards ────────────────────────────────────────────────────
+  (function buildProducts() {
+    var container = document.getElementById('products');
+    Object.keys(products).forEach(function(pid) {
+      var p = products[pid];
+      var card = document.createElement('div');
+      card.className = 'product-card' + (pid === selectedProduct ? ' active' : '');
+      card.innerHTML =
+        '<div class="product-name">' + p.name + '</div>' +
+        '<div class="product-count" id="count-' + pid + '">' + p.count + '</div>' +
+        '<div class="product-price" id="price-' + pid + '">$' + p.price + '</div>';
+      card.onclick = function() { selectProduct(pid); };
+      p.el = card;
+      container.appendChild(card);
+    });
+  })();
+
+  function selectProduct(pid) {
+    if (products[selectedProduct].el)
+      products[selectedProduct].el.classList.remove('active');
+    selectedProduct = pid;
+    if (products[pid].el)
+      products[pid].el.classList.add('active');
+    log('Switched to ' + products[pid].name, 'info');
+  }
+
+  // ── WebSocket ──────────────────────────────────────────────────────────────
+  function connectWS() {
+    ws = new WebSocket('ws://' + location.host + '/ws');
+
+    ws.onopen = function() {
+      setWS(true);
+      log('WebSocket connected', 'info');
+    };
+
+    ws.onclose = function() {
+      setWS(false);
+      log('WebSocket disconnected — reconnecting in 2s...', 'err');
+      setTimeout(connectWS, 2000);
+    };
+
+    ws.onerror = function() { setWS(false); };
+
+    ws.onmessage = function(e) {
+      try {
+        var msg = JSON.parse(e.data);
+        var pid = msg.product_id;
+        if (!products[pid]) return;
+
+        products[pid].count = msg.count;
+        products[pid].price = msg.price;
+
+        var countEl = document.getElementById('count-' + pid);
+        var priceEl = document.getElementById('price-' + pid);
+        if (countEl) {
+          countEl.textContent = msg.count;
+          countEl.className = 'product-count' + (msg.count <= 10 ? ' low' : '');
+        }
+        if (priceEl) priceEl.textContent = '$' + parseFloat(msg.price).toFixed(0);
+
+        if (msg.count === 0) {
+          if (products[pid].el) products[pid].el.classList.add('sold-out');
+          if (pid === selectedProduct) {
+            document.getElementById('sold-out-banner').style.display = 'block';
+            log(products[pid].name + ' SOLD OUT', 'err');
+          }
+        }
+      } catch(e) {}
+    };
+  }
+
+  function setWS(ok) {
+    var dot   = document.getElementById('ws-dot');
+    var label = document.getElementById('ws-label');
+    dot.className   = 'status-dot' + (ok ? ' connected' : ' error');
+    label.textContent = ok ? 'WebSocket live' : 'WebSocket disconnected';
+  }
+
+  connectWS();
+
+  // ── Fetch real inventory on load ───────────────────────────────────────────
+  function fetchInventory() {
+    Object.keys(products).forEach(function(pid) {
+      fetch('/inventory/' + pid)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          products[pid].count = data.count;
+          products[pid].price = data.price;
+          var countEl = document.getElementById('count-' + pid);
+          var priceEl = document.getElementById('price-' + pid);
+          if (countEl) {
+            countEl.textContent = data.count;
+            countEl.className = 'product-count' + (data.count <= 10 ? ' low' : '');
+          }
+          if (priceEl) priceEl.textContent = '$' + parseFloat(data.price).toFixed(0);
+          if (data.count === 0 && products[pid].el) {
+            products[pid].el.classList.add('sold-out');
+          }
+        })
+        .catch(function() {});
+    });
+  }
+
+  fetchInventory();
+
+  // ── Simulation ─────────────────────────────────────────────────────────────
+  function startSim() {
+    if (simRunning) return;
+    simRunning = true;
+    batchIndex = 0;
+    simEpoch++;   // new epoch = fresh user IDs = no rate limit collision
+    document.getElementById('btn-start').disabled = true;
+    document.getElementById('btn-stop').disabled  = false;
+    document.getElementById('sold-out-banner').style.display = 'none';
+    log('Simulation started — sending ' + TOTAL_CELLS + ' users to /buy', 'info');
+
+    // RPS counter
+    rpsCount = 0;
+    rpsTimer = setInterval(function() {
+      document.getElementById('s-rps').textContent = rpsCount;
+      rpsCount = 0;
+    }, 1000);
+
+    simInterval = setInterval(sendBatch, TICK_MS);
+  }
+
+  function stopSim() {
+    simRunning = false;
+    clearInterval(simInterval);
+    clearInterval(rpsTimer);
+    document.getElementById('btn-start').disabled = false;
+    document.getElementById('btn-stop').disabled  = true;
+    log('Simulation stopped', 'info');
+  }
+
+  function sendBatch() {
+    if (batchIndex >= TOTAL_CELLS) {
+      stopSim();
+      log('All ' + TOTAL_CELLS + ' users sent. Final stats: won=' + stats.won + ' lost=' + stats.lost, 'info');
+      return;
+    }
+
+    var end = Math.min(batchIndex + BATCH_SIZE, TOTAL_CELLS);
+    for (var i = batchIndex; i < end; i++) {
+      sendBuy(i);
+    }
+    batchIndex = end;
+  }
+
+  function sendBuy(cellIdx, isRetry) {
+    var userId = isRetry ? ('sim' + simEpoch + '_retry_' + cellIdx + '_' + Date.now()) : ('sim' + simEpoch + '_user_' + cellIdx);
+    if (!isRetry) {
+      setCellState(cellIdx, 'waiting');
+      stats.wait++;
+      updateStats();
+      rpsCount++;
+    }
+
+    fetch('/buy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: userId, product_id: selectedProduct })
+    })
+    .then(function(r) { return r.json().then(function(b) { return { status: r.status, body: b }; }); })
+    .then(function(res) {
+      stats.wait = Math.max(0, stats.wait - 1);
+
+      if (res.status === 200) {
+        // Queued — now attempt payment
+        setCellState(cellIdx, 'waiting');
+        sendPay(cellIdx, userId);
+      } else if (res.status === 409) {
+        // Sold out — but check if inventory came back (payment fail returns stock)
+        var inv = products[selectedProduct].count;
+        if (inv > 0 && simRunning) {
+          // Inventory available again (from failed payment) — retry after short delay
+          setTimeout(function() { sendBuy(cellIdx, true); }, 200 + Math.random() * 300);
+        } else {
+          stats.lost++;
+          setCellState(cellIdx, 'lost');
+          updateStats();
+        }
+      } else if (res.status === 429) {
+        stats.rate++;
+        setCellState(cellIdx, 'ratelimit');
+        updateStats();
+      } else {
+        stats.lost++;
+        setCellState(cellIdx, 'lost');
+        updateStats();
+      }
+    })
+    .catch(function() {
+      stats.wait = Math.max(0, stats.wait - 1);
+      stats.lost++;
+      setCellState(cellIdx, 'lost');
+      updateStats();
+    });
+  }
+
+  function sendPay(cellIdx, userId) {
+    fetch('/pay', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: userId, product_id: selectedProduct })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(body) {
+      if (body.status === 'ORDER_CONFIRMED') {
+        stats.won++;
+        stats.confirmed++;
+        setCellState(cellIdx, 'won');
+        updateStats();
+      } else if (body.status === 'PAYMENT_FAILED') {
+        // Inventory was returned — retry this cell so stock doesn't get stranded
+        setCellState(cellIdx, 'waiting');
+        setTimeout(function() { sendBuy(cellIdx, true); }, 100 + Math.random() * 200);
+      } else if (body.status === 'SLOT_EXPIRED') {
+        setCellState(cellIdx, 'expired');
+        // Slot expired means inventory was NOT returned, mark as lost
+        stats.lost++;
+        updateStats();
+      } else {
+        stats.lost++;
+        setCellState(cellIdx, 'lost');
+        updateStats();
+      }
+    })
+    .catch(function() {
+      stats.lost++;
+      setCellState(cellIdx, 'lost');
+      updateStats();
+    });
+  }
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+  function setCellState(idx, state) {
+    if (cells[idx]) cells[idx].className = 'cell ' + state;
+  }
+
+  function updateStats() {
+    document.getElementById('s-won').textContent       = stats.won;
+    document.getElementById('s-lost').textContent      = stats.lost;
+    document.getElementById('s-wait').textContent      = stats.wait;
+    document.getElementById('s-rate').textContent      = stats.rate;
+    document.getElementById('s-confirmed').textContent = stats.confirmed;
+  }
+
+  function resetGrid() {
+    stopSim();
+    for (var i = 0; i < cells.length; i++) cells[i].className = 'cell';
+    stats = { won: 0, lost: 0, wait: 0, rate: 0, confirmed: 0 };
+    updateStats();
+    document.getElementById('sold-out-banner').style.display = 'none';
+    document.getElementById('s-rps').textContent = '0';
+    // Remove sold-out class from all cards
+    Object.keys(products).forEach(function(pid) {
+      if (products[pid].el) products[pid].el.classList.remove('sold-out');
+    });
+    fetchInventory();
+    log('Grid reset', 'info');
+  }
+
+  var logEl = document.getElementById('log');
+  function log(msg, type) {
+    var entry = document.createElement('div');
+    entry.className = 'entry ' + (type || '');
+    entry.textContent = '[' + new Date().toLocaleTimeString() + '] ' + msg;
+    logEl.appendChild(entry);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+</script>
+</body>
+</html>

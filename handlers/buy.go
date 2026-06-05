@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	goredis "github.com/redis/go-redis/v9"
@@ -29,17 +28,17 @@ func BuyHandler(rdb *goredis.Client) gin.HandlerFunc {
 
 		ctx := context.Background()
 
-		// ── Per-user rate limit ──────────────────────────────────────────────
-		userRateKey := fmt.Sprintf("ratelimit:%s", req.UserID)
-		set, err := rdb.SetNX(ctx, userRateKey, 1, 60*time.Second).Result()
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "redis error"})
-			return
-		}
-		if !set {
-			c.JSON(http.StatusTooManyRequests, gin.H{"error": "rate limited"})
-			return
-		}
+		// ── Per-user rate limit (commented out for demo/load testing) ──────────
+		// userRateKey := fmt.Sprintf("ratelimit:%s", req.UserID)
+		// set, err := rdb.SetNX(ctx, userRateKey, 1, 60*time.Second).Result()
+		// if err != nil {
+		// 	c.JSON(http.StatusInternalServerError, gin.H{"error": "redis error"})
+		// 	return
+		// }
+		// if !set {
+		// 	c.JSON(http.StatusTooManyRequests, gin.H{"error": "rate limited"})
+		// 	return
+		// }
 
 		// ── Per-IP rate limit (disabled for load testing — all k6 traffic same IP) ──
 		// ip := clientIP(c)

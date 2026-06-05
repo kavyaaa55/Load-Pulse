@@ -79,6 +79,12 @@ func main() {
 	// ── HTTP router ───────────────────────────────────────────────────────────
 	r := gin.Default()
 
+	// Serve the demo UI
+	r.Static("/static", "./static")
+	r.GET("/", func(c *gin.Context) {
+		c.File("./static/index.html")
+	})
+
 	r.POST("/buy", handlers.BuyHandler(redisclient.RDB))
 	r.GET("/inventory/:productID", handlers.InventoryHandler(redisclient.RDB))
 	r.GET("/queue/position/:userID/:productID", handlers.QueuePositionHandler(redisclient.RDB))
