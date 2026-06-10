@@ -20,6 +20,8 @@ A backend system that handles flash sales under extreme concurrency. When 10,000
 
 Think BookMyShow or Meesho Live — not a regular ecommerce site. The hard problem here is **race conditions**: two users reading inventory at the same millisecond, both thinking they got the last item. This project solves that with Redis Lua scripts (atomic check + decrement), a virtual queue, and slot-based reservations with TTL.
 
+This project is intentionally scoped as a backend concurrency proof-of-concept, not a full product.
+
 ```
 Resume line:
 Built a real-time flash sale platform handling 10k concurrent users across multiple
@@ -105,7 +107,7 @@ load-pulse/
 
 ```bash
 # Clone and start
-git clone https://github.com/your-username/Load-Pulse
+git clone https://github.com/kavyaaa55/Load-Pulse
 cd Load-Pulse
 docker compose up --build -d
 
