@@ -14,19 +14,21 @@ import (
 )
 
 const (
-	slotTTL      = "120" // seconds — reservation window after atomic buy
+	slotTTL      = "120"            // seconds — reservation window after atomic buy
+	SlotTTLSecs  = 120              // same value as int, used by reaper for ZADD score
 	pollInterval = 1 * time.Millisecond
-	priceHike    = 1.20 // 20 % increase when stock drops to ≤ 10
+	priceHike    = 1.20             // 20 % increase when stock drops to ≤ 10
 	lowStockMark = 10
 )
 
 // StartWorker processes the buy queue for a single product.
 // It runs until the product is sold out or the context is cancelled.
 func StartWorker(ctx context.Context, productID string, rdb *goredis.Client, hub *handlers.Hub) {
-	queueKey := fmt.Sprintf("queue:%s", productID)
-	invKey   := fmt.Sprintf("inv:%s", productID)
-	priceKey := fmt.Sprintf("price:%s", productID)
-	slotsKey := fmt.Sprintf("slots:%s", productID) // ← SET tracking active slots
+	queueKey  := fmt.Sprintf("queue:%s", productID)
+	invKey    := fmt.Sprintf("inv:%s", productID)
+	priceKey  := fmt.Sprintf("price:%s", productID)
+	slotsKey  := fmt.Sprintf("slots:%s", productID)  // SET — gate check
+	expiryKey := fmt.Sprintf("expiry:%s", productID) // ZSET — reaper tracks TTLs
 
 	log.Printf("worker[%s]: started", productID)
 
@@ -54,12 +56,17 @@ func StartWorker(ctx context.Context, productID string, rdb *goredis.Client, hub
 		slotKey   := fmt.Sprintf("slot:%s", userID)
 		boughtKey := fmt.Sprintf("bought:%s", userID)
 
-		// Run the atomic Lua script.
+		// Run the atomic Lua script — 5 KEYS + 3 ARGV.
+		// Script atomically: EXISTS bought → GET inv → DECR → SET slot →
+		// EXPIRE slot → ZADD expiry → SADD slots → return result.
+		expiryScore := fmt.Sprintf("%d", time.Now().Unix()+SlotTTLSecs)
 		result, err := redisclient.AtomicBuyScript.Run(
 			ctx,
 			rdb,
-			[]string{invKey, slotKey, boughtKey},
+			[]string{invKey, slotKey, boughtKey, slotsKey, expiryKey},
 			slotTTL,
+			expiryScore,
+			userID,
 		).Text()
 		if err != nil {
 			log.Printf("worker[%s]: lua error for user %s: %v", productID, userID, err)
@@ -68,11 +75,8 @@ func StartWorker(ctx context.Context, productID string, rdb *goredis.Client, hub
 
 		switch result {
 		case "OK":
-			// Track this user as holding an active slot
-			// Gate check in buy.go uses SCARD of this SET
-			if err := rdb.SAdd(ctx, slotsKey, userID).Err(); err != nil {
-				log.Printf("worker[%s]: SADD slots error for user %s: %v", productID, userID, err)
-			}
+			// Slot assigned atomically inside the Lua script —
+			// ZADD expiry and SADD slots already done, nothing extra needed here.
 
 			// Read the new inventory count.
 			countStr, err := rdb.Get(ctx, invKey).Result()

@@ -70,11 +70,18 @@ func main() {
 	hub := handlers.NewHub()
 	go hub.Run()
 
-	// ── Queue workers (one per product) ──────────────────────────────────────
+	// ── Queue workers (one per product) + reaper ─────────────────────────────
 	workerCtx := context.Background()
-	for _, p := range catalog {
+
+	// Collect product IDs once so the reaper and workers share the same list.
+	productIDs := make([]string, len(catalog))
+	for i, p := range catalog {
+		productIDs[i] = p.id
 		go queue.StartWorker(workerCtx, p.id, redisclient.RDB, hub)
 	}
+
+	// Reaper: recovers inventory for slots that expired without a /pay call.
+	go queue.StartReaper(workerCtx, productIDs, redisclient.RDB)
 
 	// ── HTTP router ───────────────────────────────────────────────────────────
 	r := gin.Default()

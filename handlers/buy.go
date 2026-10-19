@@ -5,10 +5,22 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	goredis "github.com/redis/go-redis/v9"
+
+	redisclient "github.com/livesale/live-sale/redis"
 )
+
+const (
+	buySlotTTL    = "120"          // seconds — must match queue/worker.go SlotTTLSecs
+	buySemSize    = 256            // max concurrent /buy requests in flight
+)
+
+// buySem caps how many /buy goroutines can be inside the Lua call at once.
+// When full we return 503 immediately instead of queuing behind a pool timeout.
+var buySem = make(chan struct{}, buySemSize)
 
 // BuyRequest is the expected JSON body for POST /buy.
 type BuyRequest struct {
@@ -17,94 +29,63 @@ type BuyRequest struct {
 }
 
 // BuyHandler returns a Gin handler for POST /buy.
-// It enforces per-user rate limiting, gate check, then enqueues the request.
+// One atomic Lua call replaces the previous 4-round-trip sequence, eliminating
+// both the TOCTOU race and pool exhaustion under load.
 func BuyHandler(rdb *goredis.Client) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// ── Semaphore: shed load fast instead of timing out ──────────────────
+		select {
+		case buySem <- struct{}{}:
+			defer func() { <-buySem }()
+		default:
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "server busy, try again"})
+			return
+		}
+
 		var req BuyRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "user_id and product_id are required"})
 			return
 		}
 
+		invKey    := fmt.Sprintf("inv:%s", req.ProductID)
+		slotKey   := fmt.Sprintf("slot:%s", req.UserID)
+		boughtKey := fmt.Sprintf("bought:%s", req.UserID)
+		slotsKey  := fmt.Sprintf("slots:%s", req.ProductID)
+		expiryKey := fmt.Sprintf("expiry:%s", req.ProductID)
+
+		// expiry score = now + TTL  (same value the reaper reads)
+		expiryScore := fmt.Sprintf("%d", time.Now().Unix()+120)
+
 		ctx := context.Background()
-
-		// ── Per-user rate limit (commented out for demo/load testing) ──────────
-		// userRateKey := fmt.Sprintf("ratelimit:%s", req.UserID)
-		// set, err := rdb.SetNX(ctx, userRateKey, 1, 60*time.Second).Result()
-		// if err != nil {
-		// 	c.JSON(http.StatusInternalServerError, gin.H{"error": "redis error"})
-		// 	return
-		// }
-		// if !set {
-		// 	c.JSON(http.StatusTooManyRequests, gin.H{"error": "rate limited"})
-		// 	return
-		// }
-
-		// ── Per-IP rate limit (disabled for load testing — all k6 traffic same IP) ──
-		// ip := clientIP(c)
-		// ipRateKey := fmt.Sprintf("ratelimit:ip:%s", ip)
-		// ipSet, err := rdb.SetNX(ctx, ipRateKey, 1, 60*time.Second).Result()
-		// if err != nil {
-		// 	c.JSON(http.StatusInternalServerError, gin.H{"error": "redis error"})
-		// 	return
-		// }
-		// if !ipSet {
-		// 	c.JSON(http.StatusTooManyRequests, gin.H{"error": "rate limited (ip)"})
-		// 	return
-		// }
-
-		// ── Verify product exists + get inventory ────────────────────────────
-		invKey := fmt.Sprintf("inv:%s", req.ProductID)
-		invCount, err := rdb.Get(ctx, invKey).Int()
-		if err == goredis.Nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": "product not found"})
-			return
-		}
+		result, err := redisclient.AtomicBuyScript.Run(
+			ctx,
+			rdb,
+			[]string{invKey, slotKey, boughtKey, slotsKey, expiryKey},
+			buySlotTTL,
+			expiryScore,
+			req.UserID,
+		).Text()
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "redis error"})
 			return
 		}
 
-		// ── Sold out fast path ───────────────────────────────────────────────
-		if invCount <= 0 {
+		switch result {
+		case "OK":
+			// Slot assigned atomically — no queue worker needed for /buy path.
+			// Return position 1 (immediate slot, not a queue position).
+			c.JSON(http.StatusOK, gin.H{
+				"status":   "queued",
+				"position": 1,
+			})
+		case "SOLD_OUT":
 			c.JSON(http.StatusConflict, gin.H{"error": "sold out"})
-			return
+		case "ALREADY_BOUGHT":
+			c.JSON(http.StatusConflict, gin.H{"error": "already purchased"})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "unexpected result"})
 		}
-
-		// ── Gate check: queue + active slots >= inventory → reject ───────────
-		// This prevents people from joining a queue when all items are already
-		// spoken for (either being paid for or waiting in queue).
-		queueKey := fmt.Sprintf("queue:%s", req.ProductID)
-		slotsKey := fmt.Sprintf("slots:%s", req.ProductID)
-
-		queueLen, err := rdb.LLen(ctx, queueKey).Result()
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "redis error"})
-			return
-		}
-
-		activeSlots, err := rdb.SCard(ctx, slotsKey).Result()
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "redis error"})
-			return
-		}
-
-		if queueLen+activeSlots >= int64(invCount) {
-			c.JSON(http.StatusConflict, gin.H{"error": "sold out"})
-			return
-		}
-
-		// ── Enqueue ──────────────────────────────────────────────────────────
-		pos, err := rdb.RPush(ctx, queueKey, req.UserID).Result()
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "redis error"})
-			return
-		}
-
-		c.JSON(http.StatusOK, gin.H{
-			"status":   "queued",
-			"position": pos,
-		})
 	}
 }
 
@@ -114,7 +95,6 @@ func clientIP(c *gin.Context) string {
 		parts := strings.Split(xff, ",")
 		return strings.TrimSpace(parts[0])
 	}
-	// RemoteAddr is "host:port" — strip the port.
 	addr := c.Request.RemoteAddr
 	if idx := strings.LastIndex(addr, ":"); idx != -1 {
 		return addr[:idx]

@@ -1,0 +1,29 @@
+
+╔══════════════════════════════════════════════════════════╗
+║        LIVE SALE PLATFORM — LOAD TEST REPORT             ║
+║        run: run                                          ║
+╠══════════════════════════════════════════════════════════╣
+║  THROUGHPUT                                              ║
+║    Total requests     : 100778                          ║
+║    Req/s              : 10047 req/s                     ║
+║    Error rate (5xx)   : 15.60%                          ║
+╠══════════════════════════════════════════════════════════╣
+║  BUY ENDPOINT (/buy)                                     ║
+║    Queued (200)       : 130                             ║
+║    Sold out (409)     : 84793                           ║
+║    Rate limited (429) : 0                               ║
+║    Errors (5xx)       : 15725                           ║
+║    Abandoned          : 0                               ║
+║    Slot acquired rate : 0.15%                           ║
+║    200 p50 / p95      : N/A / 237.41 ms                 ║
+║    409 p50 / p95      : N/A / 85.04 ms                  ║
+║    5xx p50 / p95      : N/A / 55.86 ms                  ║
+╠══════════════════════════════════════════════════════════╣
+║  PAYMENT ENDPOINT (/pay)                                 ║
+║    Confirmed orders   : 100                             ║
+║    Payment failed     : 30                              ║
+║    Slot expired       : 0                               ║
+║    Errors (5xx)       : 0                               ║
+║    Pay success rate   : 76.92%                          ║
+║    p50 / p99          : N/A / N/A                       ║
+╚══════════════════════════════════════════════════════════╝

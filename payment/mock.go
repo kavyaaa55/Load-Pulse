@@ -14,6 +14,7 @@ import (
 
 	"github.com/livesale/live-sale/db"
 	"github.com/livesale/live-sale/models"
+	redisclient "github.com/livesale/live-sale/redis"
 )
 
 // PayRequest is the expected JSON body for POST /pay.
@@ -37,7 +38,8 @@ func PayHandler(rdb *goredis.Client, database *db.DB) gin.HandlerFunc {
 		boughtKey := fmt.Sprintf("bought:%s", req.UserID)
 		invKey    := fmt.Sprintf("inv:%s", req.ProductID)
 		priceKey  := fmt.Sprintf("price:%s", req.ProductID)
-		slotsKey  := fmt.Sprintf("slots:%s", req.ProductID) // ← SET tracking active slots
+		slotsKey  := fmt.Sprintf("slots:%s", req.ProductID)
+		expiryKey := fmt.Sprintf("expiry:%s", req.ProductID)
 
 		// Verify the reservation slot is still valid.
 		exists, err := rdb.Exists(ctx, slotKey).Result()
@@ -53,10 +55,13 @@ func PayHandler(rdb *goredis.Client, database *db.DB) gin.HandlerFunc {
 		// Simulate payment outcome: 80 % success.
 		if rand.Float64() < 0.80 {
 			// ── Payment succeeded ────────────────────────────────────────────
+			// Mark bought, remove slot key, remove from slots SET, and remove
+			// from expiry ZSET so the reaper does not try to reclaim this slot.
 			pipe := rdb.Pipeline()
 			pipe.Set(ctx, boughtKey, 1, 0)
 			pipe.Del(ctx, slotKey)
-			pipe.SRem(ctx, slotsKey, req.UserID) // ← slot khatam, SET se hatao
+			pipe.SRem(ctx, slotsKey, req.UserID)
+			pipe.ZRem(ctx, expiryKey, req.UserID) // prevent reaper double-count
 			if _, err := pipe.Exec(ctx); err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "redis error"})
 				return
@@ -83,14 +88,24 @@ func PayHandler(rdb *goredis.Client, database *db.DB) gin.HandlerFunc {
 			c.JSON(http.StatusOK, gin.H{"status": "ORDER_CONFIRMED"})
 
 		} else {
-			// ── Payment failed — return the inventory unit ───────────────────
-			pipe := rdb.Pipeline()
-			pipe.Incr(ctx, invKey)
-			pipe.Del(ctx, slotKey)
-			pipe.SRem(ctx, slotsKey, req.UserID) // ← slot free, SET se hatao
-			if _, err := pipe.Exec(ctx); err != nil {
+			// ── Payment failed — return the inventory unit atomically ─────────
+			// PayFailScript atomically: checks slot still exists, DELs slot,
+			// INCRs inventory, ZREMs from expiry ZSET, SREMs from slots SET.
+			// Returns 1 if inventory was returned, 0 if slot was already gone
+			// (e.g. reaper fired between our Exists check above and now).
+			n, err := redisclient.PayFailScript.Run(
+				ctx,
+				rdb,
+				[]string{slotKey, invKey, expiryKey, slotsKey},
+				req.UserID,
+			).Int()
+			if err != nil && err != goredis.Nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "redis error"})
 				return
+			}
+			if n == 0 {
+				// Reaper already reclaimed this slot — inventory already returned.
+				log.Printf("payment: slot already reaped for user %s, no double-return", req.UserID)
 			}
 
 			c.JSON(http.StatusPaymentRequired, gin.H{"status": "PAYMENT_FAILED"})
